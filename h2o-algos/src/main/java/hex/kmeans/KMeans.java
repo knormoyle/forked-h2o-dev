@@ -77,151 +77,143 @@ public class KMeans extends ModelBuilder<KMeansModel,KMeansModel.KMeansParameter
     _ncats = ncats;
   }
 
-  // ----------------------
-  private class KMeansDriver extends H2OCountedCompleter<KMeansDriver> {
-
-    @Override protected void compute2() {
-
-      KMeansModel model = null;
-      try {
-        _parms.lock_frames(KMeans.this); // Fetch & read-lock input frames
-        init(true);
-
-        // The model to be built
-        model = new KMeansModel(dest(), _parms, new KMeansModel.KMeansOutput(KMeans.this));
-        model.delete_and_lock(_key);
-
-        // means are used to impute NAs
-        model._output._ncats = _ncats;
-        Vec vecs[] = _train.vecs();
-        final int N = vecs.length; // Feature count
-        double[] means = new double[N];
-        for( int i = 0; i < N; i++ )
-          means[i] = vecs[i].mean();
-        // mults & means for standardization
-        double[] mults = null;
-        if( _parms._standardize ) {
-          mults = new double[N];
-          for( int i = 0; i < N; i++ ) {
-            double sigma = vecs[i].sigma();
-            mults[i] = standardize(sigma) ? 1.0 / sigma : 1.0;
-          }
-        }
-
-        // Initialize clusters
-        Random rand = water.util.RandomUtils.getRNG(_parms._seed - 1);
-        double clusters[][];    // Standardized cluster centers
-        if( _parms._init == Initialization.None ) {
-          // Initialize all clusters to random rows
-          clusters = model._output._clusters = new double[_parms._k][_train.numCols()];
-          for( double[] cluster : clusters )
-            randomRow(vecs, rand, cluster, means, mults);
-        } else {
-          clusters = new double[1][vecs.length];
-          // Initialize first cluster to random row
-          randomRow(vecs, rand, clusters[0], means, mults);
-
-          while( model._output._iters < 5 ) {
-            // Sum squares distances to clusters
-            SumSqr sqr = new SumSqr(clusters,means,mults,_ncats).doAll(vecs);
-
-            // Sample with probability inverse to square distance
-            Sampler sampler = new Sampler(clusters, means, mults, _ncats, sqr._sqr, _parms._k * 3, _parms._seed).doAll(vecs);
-            clusters = ArrayUtils.append(clusters,sampler._sampled);
-
-            // Fill in sample clusters into the model
-            if( !isRunning() ) return; // Stopped/cancelled
-            model._output._clusters = destandardize(clusters, _ncats, means, mults);
-            model._output._mse = sqr._sqr/_train.numRows();
-
-            model._output._iters++;     // One iteration done
-
-            // This doesn't count towards model building (we didn't account these iterations as work to be done during construction)
-            // update(1);          // One unit of work
-
-            model.update(_key); // Early version of model is visible
-          }
-          // Recluster down to K standardized clusters
-          clusters = recluster(clusters, rand);
-        }
-        model._output._iters = 0;     // Reset iteration count
-
-        // ---
-        // Run the main KMeans Clustering loop
-        // Stop after enough iterations
-        LOOP:
-        for( ; model._output._iters < _parms._max_iters; model._output._iters++ ) {
-          if( !isRunning() ) return; // Stopped/cancelled
-          Lloyds task = new Lloyds(clusters,means,mults,_ncats, _parms._k).doAll(vecs);
-          // Pick the max categorical level for clusters' center
-          max_cats(task._cMeans,task._cats);
-
-          // Handle the case where some clusters go dry.  Rescue only 1 cluster
-          // per iteration ('cause we only tracked the 1 worst row)
-          boolean badrow=false;
-          for( int clu=0; clu<_parms._k; clu++ ) {
-            if (task._rows[clu] == 0) {
-              // If we see 2 or more bad rows, just re-run Lloyds to get the
-              // next-worst row.  We don't count this as an iteration, because
-              // we're not really adjusting the centers, we're trying to get
-              // some centers *at-all*.
-              if (badrow) {
-                Log.warn("KMeans: Re-running Lloyds to re-init another cluster");
-                model._output._iters--; // Do not count against iterations
-                if (_reinit_attempts++ < _parms._k) {
-                  continue LOOP;  // Rerun Lloyds, and assign points to centroids
-                } else {
-                  _reinit_attempts = 0;
-                  break; //give up and accept empty cluster
-                }
-              }
-              long row = task._worst_row;
-              Log.warn("KMeans: Re-initializing cluster " + clu + " to row " + row);
-              data(clusters[clu] = task._cMeans[clu], vecs, row, means, mults);
-              task._rows[clu] = 1;
-              badrow = true;
-            }
-          }
-
-          // Fill in the model; destandardized centers
-          model._output._clusters = destandardize(task._cMeans, _ncats, means, mults);
-          model._output._rows = task._rows;
-          model._output._mses = task._cSqr;
-          double ssq = 0;       // sum squared error
-          for( int i=0; i<_parms._k; i++ ) {
-            ssq += model._output._mses[i]; // sum squared error all clusters
-            model._output._mses[i] /= task._rows[i]; // mse per-cluster
-          }
-          model._output._mse = ssq/_train.numRows(); // mse total
-          model.update(_key); // Update model in K/V store
-          update(1);          // One unit of work
-
-          // Compute change in clusters centers
-          double sum=0;
-          for( int clu=0; clu<_parms._k; clu++ )
-            sum += distance(clusters[clu],task._cMeans[clu],_ncats);
-          sum /= N;             // Average change per feature
-          Log.info("KMeans: Change in cluster centers="+sum);
-          if( sum < 1e-6 ) break;  // Model appears to be stable
-          clusters = task._cMeans; // Update cluster centers
-
-          StringBuilder sb = new StringBuilder();
-          sb.append("KMeans: iter: ").append(model._output._iters).append(", MSE=").append(model._output._mse);
-          for( int i=0; i<_parms._k; i++ )
-            sb.append(", ").append(task._cSqr[i]).append("/").append(task._rows[i]);
-          Log.info(sb);
-        }
-
-      } catch( Throwable t ) {
-        t.printStackTrace();
-        cancel2(t);
-        throw t;
-      } finally {
-        if( model != null ) model.unlock(_key);
-        _parms.unlock_frames(KMeans.this);
-        done();                 // Job done!
+  // 
+  void prepData( KMeansModel model ) {
+    // means are used to impute NAs
+    model._output._ncats = _ncats;
+    Vec vecs[] = _train.vecs();
+    final int N = vecs.length; // Feature count
+    double[] means = new double[N];
+    for( int i = 0; i < N; i++ )
+      means[i] = vecs[i].mean();
+    // mults & means for standardization
+    double[] mults = null;
+    if( _parms._standardize ) {
+      mults = new double[N];
+      for( int i = 0; i < N; i++ ) {
+        double sigma = vecs[i].sigma();
+        mults[i] = standardize(sigma) ? 1.0 / sigma : 1.0;
       }
-      tryComplete();
+    }
+  }
+
+  void initClusters() {
+      // Initialize clusters
+      Random rand = water.util.RandomUtils.getRNG(_parms._seed - 1);
+      if( _parms._init == Initialization.None ) {
+        // Initialize all clusters to random rows
+        clusters = model._output._clusters = new double[_parms._k][_train.numCols()];
+        for( double[] cluster : clusters )
+          randomRow(vecs, rand, cluster, means, mults);
+      } else {
+        clusters = new double[1][vecs.length];
+        // Initialize first cluster to random row
+        randomRow(vecs, rand, clusters[0], means, mults);
+
+        while( model._output._iters < 5 ) {
+          // Sum squares distances to clusters
+          SumSqr sqr = new SumSqr(clusters,means,mults,_ncats).doAll(vecs);
+
+          // Sample with probability inverse to square distance
+          Sampler sampler = new Sampler(clusters, means, mults, _ncats, sqr._sqr, _parms._k * 3, _parms._seed).doAll(vecs);
+          clusters = ArrayUtils.append(clusters,sampler._sampled);
+
+          // Fill in sample clusters into the model
+          if( !isRunning() ) return; // Stopped/cancelled
+          model._output._clusters = destandardize(clusters, _ncats, means, mults);
+          model._output._mse = sqr._sqr/_train.numRows();
+
+          model._output._iters++;     // One iteration done
+
+          // This doesn't count towards model building (we didn't account these iterations as work to be done during construction)
+          // update(1);          // One unit of work
+
+          model.update(_key); // Early version of model is visible
+        }
+        // Recluster down to K standardized clusters
+        clusters = recluster(clusters, rand);
+      }
+  }
+
+  boolean cleanupBadClusters() {
+    boolean badrow=false;
+    for( int clu=0; clu<_parms._k; clu++ ) {
+      if (task._rows[clu] == 0) {
+        // If we see 2 or more bad rows, just re-run Lloyds to get the
+        // next-worst row.  We don't count this as an iteration, because
+        // we're not really adjusting the centers, we're trying to get
+        // some centers *at-all*.
+        if (badrow) {
+          Log.warn("KMeans: Re-running Lloyds to re-init another cluster");
+          model._output._iters--; // Do not count against iterations
+          if (_reinit_attempts++ < _parms._k) {
+            return false;  // Rerun Lloyds, and assign points to centroids
+          } else {
+            _reinit_attempts = 0;
+            break; //give up and accept empty cluster
+          }
+        }
+        long row = task._worst_row;
+        Log.warn("KMeans: Re-initializing cluster " + clu + " to row " + row);
+        data(centers[clu] = task._cMeans[clu], vecs, row, means, mults);
+        task._rows[clu] = 1;
+        badrow = true;
+      }
+    }
+    return true;
+  }
+
+  double[][] computeStatsFillModel() {
+    // Fill in the model; destandardized centers
+    model._output._clusters = destandardize(task._cMeans, _ncats, means, mults);
+    model._output._rows = task._rows;
+    model._output._mses = task._cSqr;
+    double ssq = 0;       // sum squared error
+    for( int i=0; i<_parms._k; i++ ) {
+      ssq += model._output._mses[i]; // sum squared error all clusters
+      model._output._mses[i] /= task._rows[i]; // mse per-cluster
+    }
+    model._output._mse = ssq/_train.numRows(); // mse total
+    // Compute change in clusters centers
+    double sum=0;
+    for( int clu=0; clu<_parms._k; clu++ )
+      sum += distance(clusters[clu],task._cMeans[clu],_ncats);
+    sum /= N;             // Average change per feature
+    _avg_cluster_change = sum;
+
+    clusters = task._cMeans; // Update cluster centers
+    _iters = model._output._iters++;
+        return clusters;
+  }
+
+  @Override boolean done(KMeansModel model) {
+    return 
+      _avg_cluster_change < _parms._epsilon || // Converged
+      !isRunning() ||                          // User clicked stop
+      model._output._iters >= _parms._max_iters; // Safety stop
+  }
+
+  // ----------------------
+  @Override protected void trainModel() {
+    try( KMeansModel model = new KMeansModel(this) ) {
+      double[][] centers = prepData(model);
+
+      // Run the main KMeans Clustering loop; stop after enough iterations
+      do {
+        Lloyds task = new Lloyds(centers, means, mults, _ncats, _parms._k).doAll(vecs);
+
+        // Pick the max categorical level for clusters' center
+        max_cats(task._cMeans, task._cats);
+
+        // Handle the case where some clusters go dry.  Rescue only 1 cluster
+        // per iteration ('cause we only tracked the 1 worst row)
+        if( !cleanupBadClusters(task) ) CONTINUE;
+
+        centers = computeStatsFillModel(task);
+
+        model.update(); // Update model in K/V store
+        progressed();   // One unit of work
+      } while( !done(model) );
     }
   }
 

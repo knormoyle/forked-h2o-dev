@@ -46,48 +46,18 @@ public class Example extends SupervisedModelBuilder<ExampleModel,ExampleModel.Ex
   }
 
   // ----------------------
-  private class ExampleDriver extends H2OCountedCompleter<ExampleDriver> {
+  @Override protected void trainModel() {
+    try(Model model = new ExampleModel(this)) {
+      // Run the main Example Loop; Stop after enough iterations
+      for( ; model._output._iters < _parms._max_iters && isRunning(); model._output._iters++ ) {
 
-    @Override protected void compute2() {
-      ExampleModel model = null;
-      try {
-        Scope.enter();
-        _parms.lock_frames(Example.this); // Fetch & read-lock source frame
-        init(true);
+        // Do the Math; collect results
+        model._output._maxs = new Max().doAll(_parms.train())._maxs;
 
-        // The model to be built
-        model = new ExampleModel(dest(), _parms, new ExampleModel.ExampleOutput(Example.this));
-        model.delete_and_lock(_key);
-
-        // ---
-        // Run the main Example Loop
-        // Stop after enough iterations
-        for( ; model._output._iters < _parms._max_iters; model._output._iters++ ) {
-          if( !isRunning() ) break; // Stopped/cancelled
-
-          double[] maxs = new Max().doAll(_parms.train())._maxs;
-
-          // Fill in the model
-          model._output._maxs = maxs;
-          model.update(_key); // Update model in K/V store
-          update(1);          // One unit of work
-
-          StringBuilder sb = new StringBuilder();
-          sb.append("Example: iter: ").append(model._output._iters);
-          Log.info(sb);
-        }
-
-      } catch( Throwable t ) {
-        t.printStackTrace();
-        cancel2(t);
-        throw t;
-      } finally {
-        if( model != null ) model.unlock(_key);
-        _parms.unlock_frames(Example.this);
-        Scope.exit(model._key);
-        done();                 // Job done!
+        // Atomically update the Model to the world
+        progressed();           // One unit of work
+        model.update();         // Update model in K/V store
       }
-      tryComplete();
     }
   }
 

@@ -4,7 +4,7 @@ import water.util.DocGen.HTML;
 
 /** Auto-serializer interface using a delegator pattern (the faster option is
  *  to byte-code gen directly in all Iced classes, but this requires all Iced
- *  classes go through a ClassLoader). 
+ *  classes go through a ClassLoader).
  *  <p>
  *  Freeazable is a marker interface, and {@link Iced} is the companion marker
  *  class.  Marked classes have 2-byte integer type associated with them, and
@@ -23,7 +23,6 @@ public interface Freezable<T extends Freezable> extends Cloneable {
   /** Standard "read thyself from the AutoBuffer" call, using the fast Iced protocol.  Real work
    *  is in the delegate {@link Icer} classes.
    *  @param ab <code>AutoBuffer</code> to read this object from.
-   *  @param <T> Type of returned object
    *  @return Returns a new instance of object reconstructed from AutoBuffer. */
   T read(AutoBuffer ab);
   /** Standard "write thyself into the AutoBuffer" call, using JSON.  Real work
@@ -34,7 +33,6 @@ public interface Freezable<T extends Freezable> extends Cloneable {
   /** Standard "read thyself from the AutoBuffer" call, using JSON.  Real work
    *  is in the delegate {@link Icer} classes.
    *  @param ab <code>AutoBuffer</code> to read this object from.
-   *  @param <T> Type of returned object
    *  @return Returns an instance of object reconstructed from JSON data. */
   T readJSON(AutoBuffer ab);
   /** Standard "write thyself into the AutoBuffer" call, using HTML.  Real work

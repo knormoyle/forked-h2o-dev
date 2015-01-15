@@ -42,7 +42,7 @@
   }
 
   x_ignore <- setdiff(setdiff(cc, x), y)
-  if(length(x_ignore) == 0L) x_ignore <- ''
+#  if(length(x_ignore) == 0L) x_ignore <- list()
   list(x=x, y=y, x_i=x_i, x_ignore=x_ignore, y_i=y_i)
 }
 
@@ -67,8 +67,8 @@
   }
 
   cols_ignore <- setdiff(cc, cols)
-  if( length(cols_ignore) == 0L )
-    cols_ignore <- ''
+  # if( length(cols_ignore) == 0L )
+  #   cols_ignore <- ''
   list(cols=cols, cols_ind=cols_ind, cols_ignore=cols_ignore)
 }
 
@@ -140,7 +140,7 @@
         if (!inherits(params[[i$name]], type))
           e <- paste0("vector of ", i$name, " must be of type ", type, ", but got ", class(params[[i$name]]), ".\n")
         else
-          params[[i$name]] <<- .collapse(params[[i$name]])
+          params[[i$name]] <<- .collapse.json(params[[i$name]])
       }
     }
     e
@@ -279,34 +279,30 @@ h2o.crossValidate <- function(model, nfolds, model.type = c("gbm", "glm", "deepl
 #' prostate.gbm <- h2o.gbm(3:9, "CAPSULE", prostate.hex)
 #' h2o.performance(model = prostate.gbm, data=prostate.hex)
 h2o.performance <- function(model, data=NULL) {
-  # Required args: model
-  if(missing(model)) stop ("argument \"model\" is missing, with no default")
-  
   # Some parameter checking
-  if(!inherits(model, "H2OModel")) stop("model must be of type H2OModel")
-  if(!is.null(data) && class(data) != "H2OFrame") stop("data must be an H2OFrame")
-  
-  
+  if(!is(model, "H2OModel")) stop("`model` must an H2OModel object")
+  if(!is.null(data) && !is(data, "H2OFrame")) stop("`data` must be an H2OFrame object")
+
   parms <- list()
   parms[["model"]] <- model@key
   if(!is.null(data))
     parms[["frame"]] <- data@key
-  
+
   if(missing(data)){
     res <- .h2o.__remoteSend(model@h2o, method = "GET", .h2o.__MODEL_METRICS(model@key))
   }
   else {
     res <- .h2o.__remoteSend(model@h2o, method = "POST", .h2o.__MODEL_METRICS(model@key,data@key), .params = parms)
   }
-  
+
   algo <- model@algorithm
-  res$model_metrics <- unlist(res$model_metrics, F)
+  res$model_metrics <- res$model_metrics[[1L]]
   metrics <- res$model_metrics[!(names(res$model_metrics) %in% c("__meta", "names", "domains", "model_category"))]
-  
+
   model_category <- res$model_metrics$model_category
   Class <- paste0("H2O", model_category, "Metrics")
-  
-  new(Class       = Class,
-      algorithm   = algo,
-      metrics = metrics)
+
+  new(Class     = Class,
+      algorithm = algo,
+      metrics   = metrics)
 }

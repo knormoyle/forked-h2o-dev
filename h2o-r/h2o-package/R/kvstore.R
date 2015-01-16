@@ -184,12 +184,6 @@ h2o.getModel <- function(key, conn = h2o.getConnection(), linkToGC = FALSE) {
         type    <- mapping[1L, 1L]
         scalar  <- mapping[1L, 2L]
 
-        # Change Java Array to R list
-        if (!scalar) {
-          arr <- gsub("\\[", "", gsub("]", "", value))
-          value <- unlist(strsplit(arr, split=", "))
-        }
-
         # Prase frame information to a key
         if (type == "H2OFrame")
           value <- value$name
@@ -203,8 +197,9 @@ h2o.getModel <- function(key, conn = h2o.getConnection(), linkToGC = FALSE) {
   })
 
   # Convert ignored_columns/response_column to valid R x/y
-  if (!is.null(parameters$ignored_columns))
-    parameters$x <- .verify_datacols(h2o.getFrame(conn, parameters$training_frame), parameters$ignored_columns)$cols_ignore
+  cols <- colnames(h2o.getFrame(conn, parameters$training_frame))
+  
+  parameters$x <- setdiff(cols, parameters$ignored_columns)
   if (!is.null(parameters$response_column))
   {
     parameters$y <- parameters$response_column

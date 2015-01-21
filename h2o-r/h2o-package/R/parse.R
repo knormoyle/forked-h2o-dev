@@ -16,7 +16,7 @@ h2o.parseRaw <- function(data, key = "", header, sep = "", col.names) {
 
   # Prep srcs: must be of the form [src1,src2,src3,...]
   srcs <- data@key
-  srcs <- .collapse(srcs)
+  srcs <- .collapse.char(srcs)
 
   # First go through ParseSetup
   parseSetup <- .h2o.__remoteSend(data@h2o, .h2o.__PARSE_SETUP, srcs = srcs)
@@ -25,7 +25,7 @@ h2o.parseRaw <- function(data, key = "", header, sep = "", col.names) {
   col.names <- parseSetup$columnNames
 
   parse.params <- list(
-        srcs = srcs,
+        srcs = srcs, # TODO: use the keys list output by ParseSetup
         hex  = paste0(ifelse(nzchar(key), paste0(key, ".hex"), parseSetup$hexName), .get.session_id()),
         columnNames = .collapse.char(col.names),
         sep = parseSetup$sep,
